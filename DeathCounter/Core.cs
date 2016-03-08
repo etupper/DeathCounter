@@ -40,6 +40,7 @@ namespace DeathCounter
 
             Logging.Instance.WriteLine( string.Format( "Script Initialized: {0}", version ) );
 
+            //register the event that fires when a player dies
             MyAPIGateway.Session.DamageSystem.RegisterDestroyHandler( 0, DestroyHandler );
         }
 
@@ -54,6 +55,8 @@ namespace DeathCounter
 
             var character = (IMyEntity)target;
             var player = MyAPIGateway.Players.GetPlayerControllingEntity( character );
+
+            //find out what killed the player
             IMyEntity attacker = null;
             if ( !MyAPIGateway.Entities.TryGetEntityById( info.AttackerId, out attacker ) )
             {
@@ -65,6 +68,8 @@ namespace DeathCounter
             string message;
             int index;
             Logging.Instance.WriteLine("evaluating death");
+
+            //damage system doesn't pick up suicide correctly, so this is a workaround
             if(info.Amount==1000)
             {
                 index = random.Next( 0, Messages.SuicideStrings.Count( ) - 1 );
@@ -72,9 +77,11 @@ namespace DeathCounter
                 HandleMessage( playerName + message, player );
             }
 
+            //if there is no player name, it's an NPC, if there's no damage type, there's some error. Do nothing in either case.
             if ( info.Type.ToString( ) == "" || playerName == "" )
                 return;
 
+            //take the damage type and pick a random message to display
             switch ( info.Type.String )
             {
                 case "Explosion":
@@ -166,43 +173,55 @@ namespace DeathCounter
 
         private static void HandleMessage( string message, IMyPlayer player )
         {
+            //this takes the death message and sends it out to all players
             Logging.Instance.WriteLine("HandleMessage");
+
+            //only the server should do this
             if ( !MyAPIGateway.Multiplayer.IsServer )
             {
                 return;
             }
 
+            //update the list of players and how many times they've died
             if ( DeathCounter.ContainsKey( player ) )
             {
+                //if the player is in the list, increment their death count
                 DeathCounter[player] = DeathCounter[player] + 1;
             }
             else
             {
+                //if not, give them an entry in the list
                 DeathCounter.Add( player, 1 );
             }
 
+            //create a new notification item to send to players
             ServerNotificationItem item = new ServerNotificationItem
             {
                 notificationMessage = message,
                 deadId = player.PlayerID
             };
             Logging.Instance.WriteLine(message);
+
+            //serialize to XML then to UTF8-encoded byte array
             string itemMessage = MyAPIGateway.Utilities.SerializeToXML<ServerNotificationItem>( item );
             byte[ ] itemData = Encoding.UTF8.GetBytes( itemMessage );
 
+            //send the byte array out to players
             MyAPIGateway.Utilities.InvokeOnGameThread( ( ) =>
              {
                  MyAPIGateway.Multiplayer.SendMessageToOthers( CLIENT_ID, itemData );
              } );
         }
-
-        // Utility
+        
         public void HandleMessageEntered( string messageText, ref bool sendToOthers )
         {
+            //this gets triggered when a player sends a chat message
             try
             {
+                //if we're interested in the message, set sendToOthers false so other players don't see it
                 if ( messageText == "/death counter" )
                 {
+                    //send the local player's SteamID to the server to request the death count dialog
                     var data = Encoding.UTF8.GetBytes( MyAPIGateway.Session.LocalHumanPlayer.SteamUserId.ToString( ) );
                     sendToOthers = false;
 
@@ -220,11 +239,15 @@ namespace DeathCounter
 
         public void HandleServerData( byte[ ] data )
         {
+            //when the server sends data to the client, it goes here
             Logging.Instance.WriteLine( string.Format( "Received Server Data: {0} bytes", data.Length ) );
 
+            //make extra super sure this isn't the server
             if ( MyAPIGateway.Multiplayer.IsServer && MyAPIGateway.Session.LocalHumanPlayer == null )
                 return;
 
+            //decode the message from the byte array
+            //put it in a try/catch block in case it fails and throws an error
             string message = "";
             try
             {
@@ -235,17 +258,16 @@ namespace DeathCounter
                 return;
             }
 
-           // ServerNotificationItem item = new ServerNotificationItem( );
-
+           //convert from XML back into our notification item
             ServerNotificationItem item = MyAPIGateway.Utilities.SerializeFromXML<ServerNotificationItem>( message );
 
+            //if there's text in this field, it's meant to create a dialog window
             if ( item.dialogMessage != "" )
                 Dialog( item.dialogMessage );
 
+            //this one shows a notification
             if ( item.notificationMessage != "" )
                 Notification( item.notificationMessage, item.deadId );
-
-
         }
 
         public void HandlePlayerData( byte[ ] data )
@@ -258,12 +280,14 @@ namespace DeathCounter
             }
             catch { return; }
 
+            //try and get the actual ulong item out of the text
             ulong steamId;
             if ( !ulong.TryParse( text, out steamId ) )
                 return;
 
             ServerNotificationItem item = new ServerNotificationItem( );
 
+            //create the dialog to show to the client
             if ( DeathCounter.Any( ) )
             {
                 foreach ( IMyPlayer player in Core.DeathCounter.Keys )
@@ -276,11 +300,13 @@ namespace DeathCounter
                 item.dialogMessage = "No one has died yet.";
             }
 
+            //set the notification to empty so we only show the dialog
             item.notificationMessage = "";
 
+            //encode the message and beam it to the client
             string itemMessage = MyAPIGateway.Utilities.SerializeToXML( item );
             byte[ ] itemData = Encoding.UTF8.GetBytes( itemMessage );
-
+            
             MyAPIGateway.Utilities.InvokeOnGameThread( ( ) =>
              {
                  MyAPIGateway.Multiplayer.SendMessageTo( CLIENT_ID, itemData, steamId );
@@ -289,12 +315,13 @@ namespace DeathCounter
 
         public void Dialog( string message )
         {
+            //show the dialog to the player
             MyAPIGateway.Utilities.ShowMissionScreen( "Death Counter", "", "", message.Replace( "|", "\n\r" ), null, "close" );
         }
 
         public void Notification( string message, long playerId )
         {
-
+            //this selects a color for the notificaion text based on whether the dead player is enemy/ally/neutral/self
             var relation =
                 MyAPIGateway.Session.LocalHumanPlayer.GetRelationTo( playerId );
 
@@ -310,6 +337,7 @@ namespace DeathCounter
 
         public void AddMessageHandler( )
         {
+            //register all our events and stuff
             MyAPIGateway.Utilities.MessageEntered += HandleMessageEntered;
             MyAPIGateway.Multiplayer.RegisterMessageHandler( CLIENT_ID, HandleServerData );
             MyAPIGateway.Multiplayer.RegisterMessageHandler( SERVER_ID, HandlePlayerData );
@@ -317,6 +345,7 @@ namespace DeathCounter
 
         public void RemoveMessageHandler( )
         {
+            //unregister them when the game is closed
             MyAPIGateway.Utilities.MessageEntered -= HandleMessageEntered;
             MyAPIGateway.Multiplayer.UnregisterMessageHandler( CLIENT_ID, HandleServerData );
             MyAPIGateway.Multiplayer.UnregisterMessageHandler( SERVER_ID, HandlePlayerData );
